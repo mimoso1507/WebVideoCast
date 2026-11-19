@@ -262,7 +262,7 @@ class BrowserState(ctx: Context) {
         if (!started) load(address)
     }
 
-    fun setDesktop(on: Boolean) {
+    fun applyDesktop(on: Boolean) {
         desktop = on
         Store.desktopMode = on
         web.settings.userAgentString = if (on) DESKTOP_UA else defaultUa
@@ -302,7 +302,7 @@ fun BrowserScreen(b: BrowserState) {
             }) {
                 Icon(if (b.bookmarked) Icons.Default.Star else Icons.Default.StarBorder, "Favorito")
             }
-            IconButton(onClick = { b.setDesktop(!b.desktop) }) {
+            IconButton(onClick = { b.applyDesktop(!b.desktop) }) {
                 Icon(
                     Icons.Default.DesktopWindows, "Sitio de escritorio",
                     tint = if (b.desktop) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant

@@ -109,10 +109,11 @@ class DlnaRenderer(private val d: Device) : Renderer {
     override suspend fun poll(): PlayerState? {
         val ti = call(av, avType, "GetTransportInfo", "<InstanceID>0</InstanceID>")
         val pos = runCatching { call(av, avType, "GetPositionInfo", "<InstanceID>0</InstanceID>") }.getOrDefault("")
-        if (d.renderingUrl != null && pollCount++ % 5 == 0) {
+        val rurl = d.renderingUrl
+        if (rurl != null && pollCount++ % 5 == 0) {
             runCatching {
                 val r = call(
-                    d.renderingUrl, d.rcType ?: "urn:schemas-upnp-org:service:RenderingControl:1", "GetVolume",
+                    rurl, d.rcType ?: "urn:schemas-upnp-org:service:RenderingControl:1", "GetVolume",
                     "<InstanceID>0</InstanceID><Channel>Master</Channel>"
                 )
                 xmlTag(r, "CurrentVolume")?.trim()?.toIntOrNull()?.let { lastVolume = it }

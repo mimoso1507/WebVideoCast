@@ -49,7 +49,7 @@ fun Section(title: String, content: @Composable () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun <T> Choices(options: List<Pair<String, T>>, current: T, onPick: (T) -> Unit) {
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

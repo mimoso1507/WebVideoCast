@@ -40,7 +40,7 @@ import com.ondacast.app.cast.MediaKind
 import com.ondacast.app.data.Store
 import com.ondacast.app.fmtTime
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun <T> Chips(options: List<Pair<String, T>>, current: T, onPick: (T) -> Unit) {
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

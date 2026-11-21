@@ -60,10 +60,11 @@ private fun <T> Choices(options: List<Pair<String, T>>, current: T, onPick: (T) 
 }
 
 @Composable
-fun MirrorScreen(onStart: () -> Unit) {
+fun MirrorScreen(onStart: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     val active by MirrorService.state.collectAsState()
     val selected by CastController.selected.collectAsState()
+    val viewerUrl by CastController.viewerUrl.collectAsState()
     var res by remember { mutableStateOf(Store.mirrorRes) }
     var fps by remember { mutableStateOf(Store.mirrorFps) }
     var kbps by remember { mutableStateOf(Store.mirrorKbps) }
@@ -120,10 +121,34 @@ fun MirrorScreen(onStart: () -> Unit) {
 
         Spacer(Modifier.height(12.dp))
         if (!active) {
-            Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.ScreenShare, null); Spacer(Modifier.width(8.dp)); Text("Empezar a duplicar")
+            Button(onClick = { onStart(false) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.ScreenShare, null); Spacer(Modifier.width(8.dp)); Text("Empezar a duplicar en la TV")
+            }
+            Spacer(Modifier.height(16.dp))
+            Section("Ver en el navegador del proyector") {
+                Text(
+                    "Para proyectores o TV sin Chromecast/DLNA: el celular muestra una dirección y la abres en el navegador " +
+                        "del proyector (misma Wi‑Fi). No se instala nada allá. Esta opción no envía sonido.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { onStart(true) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Compartir por navegador")
+                }
             }
         } else {
+            val url = viewerUrl
+            if (url != null) {
+                Section("Abre esta dirección en el navegador del proyector") {
+                    androidx.compose.foundation.text.selection.SelectionContainer {
+                        Text(url, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+                    }
+                    OutlinedButton(onClick = {
+                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("OndaCast", url))
+                    }) { Text("Copiar dirección") }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { CastController.blackMode.value = true }, modifier = Modifier.weight(1f)) {
                     Text("Pantalla negra")
@@ -133,6 +158,7 @@ fun MirrorScreen(onStart: () -> Unit) {
                         Intent(ctx, MirrorService::class.java).setAction(MirrorService.ACTION_STOP)
                     )
                     CastController.blackMode.value = false
+                    CastController.viewerUrl.value = null
                     CastController.stop()
                 }, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.StopScreenShare, null); Spacer(Modifier.width(8.dp)); Text("Detener")

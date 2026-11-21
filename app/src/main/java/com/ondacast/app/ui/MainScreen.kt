@@ -68,7 +68,7 @@ import com.ondacast.app.cast.DeviceType
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(onStartMirror: () -> Unit) {
+fun MainScreen(onStartMirror: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val selected by CastController.selected.collectAsState()

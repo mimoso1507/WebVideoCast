@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.webkit.CookieManager
 import com.ondacast.app.mirror.MirrorHub
+import com.ondacast.app.mirror.WebHub
 import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Response
@@ -29,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
  *  /img/{id}.jpg?m=   fotos con formato de pantalla (ajustar/llenar/estirar)
  *  /p?u=&r=&ua=       proxy para contenido web (Referer, cookies, User-Agent)
  *  /mirror.ts         duplicación de pantalla en MPEG-TS
+ *  /view, /mirror.mjpg  ver la pantalla desde cualquier navegador (MJPEG)
  */
 class MediaServer(private val ctx: Context, port: Int) : NanoHTTPD(port) {
 
@@ -59,6 +61,9 @@ class MediaServer(private val ctx: Context, port: Int) : NanoHTTPD(port) {
                 path.startsWith("/img/") -> serveImage(session)
                 path == "/p" -> serveProxy(session)
                 path == "/mirror.ts" -> serveMirror()
+                path == "/" || path == "/view" ->
+                    newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", VIEW_HTML)
+                path == "/mirror.mjpg" -> serveMjpeg()
                 else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "No encontrado")
             }
         } catch (e: Exception) {
@@ -272,5 +277,60 @@ class MediaServer(private val ctx: Context, port: Int) : NanoHTTPD(port) {
         val r = newChunkedResponse(Response.Status.OK, "video/mpeg", stream)
         r.addHeader("Cache-Control", "no-cache")
         return r
+    }
+
+    // ---------- Ver en el navegador (MJPEG) ----------
+    private fun serveMjpeg(): Response {
+        val stream = object : InputStream() {
+            private var cur: ByteArray? = null
+            private var off = 0
+            private var lastSeq = -1L
+
+            override fun read(): Int {
+                val b = ByteArray(1)
+                return if (read(b, 0, 1) <= 0) -1 else b[0].toInt() and 0xFF
+            }
+
+            override fun read(b: ByteArray, o: Int, l: Int): Int {
+                while (true) {
+                    val c = cur
+                    if (c != null && off < c.size) {
+                        val n = minOf(l, c.size - off)
+                        System.arraycopy(c, off, b, o, n)
+                        off += n
+                        return n
+                    }
+                    cur = null
+                    if (!WebHub.active) return -1
+                    val f = WebHub.waitFrame(lastSeq, 1000) ?: continue
+                    lastSeq = f.first
+                    val head = "--onda\r\nContent-Type: image/jpeg\r\nContent-Length: ${f.second.size}\r\n\r\n".toByteArray()
+                    cur = head + f.second + "\r\n".toByteArray()
+                    off = 0
+                }
+            }
+        }
+        val r = newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=onda", stream)
+        r.addHeader("Cache-Control", "no-cache, no-store")
+        return r
+    }
+
+    companion object {
+        private const val VIEW_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>OndaCast</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}
+img{width:100vw;height:100vh;object-fit:contain;display:block}
+#h{position:fixed;left:0;right:0;bottom:8px;text-align:center;color:#555;font:14px sans-serif}</style></head>
+<body><img id="v" alt=""><div id="h">Toca la pantalla para pantalla completa</div>
+<script>
+var v=document.getElementById('v');
+function go(){v.src='/mirror.mjpg?'+Date.now()}
+v.onerror=function(){setTimeout(go,1000)};
+go();
+setTimeout(function(){document.getElementById('h').style.display='none'},6000);
+document.body.onclick=function(){var d=document.documentElement;
+if(!document.fullscreenElement&&d.requestFullscreen){d.requestFullscreen()}
+else if(document.exitFullscreen){document.exitFullscreen()}};
+</script></body></html>"""
     }
 }

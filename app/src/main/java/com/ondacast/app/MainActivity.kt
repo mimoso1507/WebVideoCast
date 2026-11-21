@@ -18,14 +18,17 @@ import com.ondacast.app.ui.OndaTheme
 
 class MainActivity : ComponentActivity() {
 
+    private var webMode = false
+
     private val projection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val data = r.data
         if (r.resultCode == RESULT_OK && data != null) {
             val i = Intent(this, MirrorService::class.java)
                 .putExtra(MirrorService.EXTRA_CODE, r.resultCode)
                 .putExtra(MirrorService.EXTRA_DATA, data)
+                .putExtra(MirrorService.EXTRA_WEB, webMode)
             ContextCompat.startForegroundService(this, i)
-            CastController.castMirror()
+            if (webMode) CastController.startViewer() else CastController.castMirror()
         } else {
             Toast.makeText(this, "Permiso de captura cancelado", Toast.LENGTH_SHORT).show()
         }
@@ -47,13 +50,14 @@ class MainActivity : ComponentActivity() {
         CastController.scan()
         setContent {
             OndaTheme {
-                MainScreen(onStartMirror = { startMirror() })
+                MainScreen(onStartMirror = { web -> startMirror(web) })
             }
         }
     }
 
-    private fun startMirror() {
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+    private fun startMirror(web: Boolean) {
+        webMode = web
+        if (!web && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             audioPermission.launch(Manifest.permission.RECORD_AUDIO)
         } else {
             launchProjection()

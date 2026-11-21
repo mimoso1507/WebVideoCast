@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
@@ -15,11 +17,14 @@ import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.ImageReader
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
 import android.os.IBinder
 import android.os.Looper
 import android.util.DisplayMetrics
@@ -28,6 +33,7 @@ import com.ondacast.app.MainActivity
 import com.ondacast.app.OndaApp
 import com.ondacast.app.data.Store
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 
 object MirrorConfig {
@@ -59,6 +65,8 @@ class MirrorService : Service() {
     private var mux: TsMuxer? = null
     private val lock = Any()
     private var t0 = 0L
+    private var reader: ImageReader? = null
+    private var readerThread: HandlerThread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -96,7 +104,7 @@ class MirrorService : Service() {
             return START_NOT_STICKY
         }
         try {
-            startMirror(code, data)
+            startMirror(code, data, intent.getBooleanExtra(EXTRA_WEB, false))
         } catch (e: Exception) {
             stopMirror()
             stopSelf()
@@ -105,7 +113,7 @@ class MirrorService : Service() {
     }
 
     @Suppress("DEPRECATION")
-    private fun startMirror(code: Int, data: Intent) {
+    private fun startMirror(code: Int, data: Intent, web: Boolean) {
         val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val proj = mgr.getMediaProjection(code, data)
         projection = proj
@@ -119,6 +127,11 @@ class MirrorService : Service() {
         val dm = DisplayMetrics()
         (getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(dm)
         val (w, h) = MirrorConfig.outputSize(dm.widthPixels, dm.heightPixels)
+
+        if (web) {
+            startWeb(proj, w, h, dm.densityDpi)
+            return
+        }
 
         val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -146,6 +159,51 @@ class MirrorService : Service() {
 
         thread(name = "onda-video") { videoLoop(enc) }
         if (audioOk) thread(name = "onda-audio") { audioLoop() }
+    }
+
+    /** Modo navegador: capturamos cuadros RGBA y los publicamos como JPEG (MJPEG). */
+    private fun startWeb(proj: MediaProjection, w: Int, h: Int, dpi: Int) {
+        val ht = HandlerThread("onda-web").also { it.start() }
+        readerThread = ht
+        val ir = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+        reader = ir
+        val interval = 1000L / minOf(Store.mirrorFps, 20)
+        val quality = when {
+            Store.mirrorKbps <= 2000 -> 60
+            Store.mirrorKbps <= 4000 -> 75
+            else -> 85
+        }
+        ir.setOnImageAvailableListener({ r ->
+            val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val start = SystemClock.uptimeMillis()
+            try {
+                val p = img.planes[0]
+                val padded = p.rowStride / p.pixelStride
+                val full = Bitmap.createBitmap(padded, h, Bitmap.Config.ARGB_8888)
+                full.copyPixelsFromBuffer(p.buffer)
+                val crop = if (padded != w) Bitmap.createBitmap(full, 0, 0, w, h) else full
+                val out = ByteArrayOutputStream(96 * 1024)
+                crop.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                if (crop !== full) crop.recycle()
+                full.recycle()
+                WebHub.publish(out.toByteArray())
+            } catch (e: Exception) {
+                // cuadro descartado
+            } finally {
+                img.close()
+            }
+            // Limita los fotogramas por segundo; el siguiente cuadro siempre será el más reciente.
+            val rest = interval - (SystemClock.uptimeMillis() - start)
+            if (rest > 0) try { Thread.sleep(rest) } catch (_: InterruptedException) {}
+        }, Handler(ht.looper))
+        display = proj.createVirtualDisplay(
+            "ondacast-web", w, h, dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
+            ir.surface, null, null
+        )
+        WebHub.reset(true)
+        running = true
+        state.value = true
     }
 
     private fun setupAudio(proj: MediaProjection): Boolean {
@@ -270,6 +328,10 @@ class MirrorService : Service() {
         running = false
         state.value = false
         MirrorHub.stopAll()
+        WebHub.reset(false)
+        try { reader?.close() } catch (_: Exception) {}
+        try { readerThread?.quitSafely() } catch (_: Exception) {}
+        reader = null; readerThread = null
         try { record?.stop() } catch (_: Exception) {}
         try { record?.release() } catch (_: Exception) {}
         try { aenc?.stop(); aenc?.release() } catch (_: Exception) {}
@@ -287,6 +349,7 @@ class MirrorService : Service() {
     companion object {
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
+        const val EXTRA_WEB = "web"
         const val ACTION_STOP = "com.ondacast.app.STOP_MIRROR"
         private const val SAMPLE_RATE = 44100
         val state = MutableStateFlow(false)

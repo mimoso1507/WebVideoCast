@@ -51,6 +51,7 @@ object CastController {
     val sleepRemaining = MutableStateFlow(0)
     val slideshowActive = MutableStateFlow(false)
     val blackMode = MutableStateFlow(false)
+    val viewerUrl = MutableStateFlow<String?>(null)
     val browserUrl = MutableStateFlow<String?>(null)
     val events = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
@@ -310,6 +311,17 @@ object CastController {
             } catch (e: Exception) {
                 events.emit("No se pudo duplicar: ${e.message}")
             }
+        }
+    }
+
+    /** Modo navegador: muestra la dirección que se abre en el navegador del proyector. */
+    fun startViewer() {
+        try {
+            val s = ensureServer()
+            viewerUrl.value = "http://${guessIp()}:${s.listeningPort}/view"
+            if (Store.blackOnMirror) blackMode.value = true
+        } catch (e: Exception) {
+            scope.launch { events.emit("No se pudo iniciar: ${e.message}") }
         }
     }
 

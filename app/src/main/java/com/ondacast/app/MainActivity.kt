@@ -5,7 +5,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.ondacast.app.ui.WebHost
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +30,49 @@ import com.ondacast.app.ui.OndaTheme
 class MainActivity : ComponentActivity() {
 
     private var webMode = false
+
+    // ---- Navegador interno: permisos, archivos y pantalla completa ----
+    private var permCb: ((Boolean) -> Unit)? = null
+    private val webPerms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        permCb?.invoke(r.values.all { it })
+        permCb = null
+    }
+    private var fileCb: ValueCallback<Array<Uri>>? = null
+    private val fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        fileCb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
+        fileCb = null
+    }
+    private var customView: View? = null
+    private var customCb: WebChromeClient.CustomViewCallback? = null
+    private var customBack: OnBackPressedCallback? = null
+
+    private fun showCustom(v: View, cb: WebChromeClient.CustomViewCallback) {
+        if (customView != null) {
+            cb.onCustomViewHidden()
+            return
+        }
+        val decor = window.decorView as FrameLayout
+        v.setBackgroundColor(android.graphics.Color.BLACK)
+        decor.addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        WindowInsetsControllerCompat(window, decor).hide(WindowInsetsCompat.Type.systemBars())
+        customView = v
+        customCb = cb
+        customBack = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = hideCustom()
+        }.also { onBackPressedDispatcher.addCallback(this, it) }
+    }
+
+    private fun hideCustom() {
+        val v = customView ?: return
+        val decor = window.decorView as FrameLayout
+        decor.removeView(v)
+        WindowCompat.getInsetsController(window, decor).show(WindowInsetsCompat.Type.systemBars())
+        customView = null
+        customBack?.remove()
+        customBack = null
+        customCb?.onCustomViewHidden()
+        customCb = null
+    }
 
     private val projection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val data = r.data
@@ -47,6 +101,22 @@ class MainActivity : ComponentActivity() {
         ) {
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        WebHost.requestPermissions = { perms, cb ->
+            permCb = cb
+            webPerms.launch(perms)
+        }
+        WebHost.chooseFile = { params, cb ->
+            fileCb?.onReceiveValue(null)
+            fileCb = cb
+            try {
+                fileChooser.launch(params.createIntent())
+            } catch (e: Exception) {
+                fileCb = null
+                cb.onReceiveValue(null)
+            }
+        }
+        WebHost.showCustomView = { v, cb -> showCustom(v, cb) }
+        WebHost.hideCustomView = { hideCustom() }
         CastController.scan()
         setContent {
             OndaTheme {
@@ -67,5 +137,13 @@ class MainActivity : ComponentActivity() {
     private fun launchProjection() {
         val mgr = getSystemService(MediaProjectionManager::class.java)
         projection.launch(mgr.createScreenCaptureIntent())
+    }
+
+    override fun onDestroy() {
+        WebHost.requestPermissions = null
+        WebHost.chooseFile = null
+        WebHost.showCustomView = null
+        WebHost.hideCustomView = null
+        super.onDestroy()
     }
 }

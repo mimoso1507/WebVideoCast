@@ -1,6 +1,24 @@
 package com.ondacast.app.ui
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.app.DownloadManager
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Environment
+import android.view.View
+import android.webkit.CookieManager
+import android.webkit.DownloadListener
+import android.webkit.GeolocationPermissions
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
+import android.webkit.PermissionRequest
+import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import androidx.core.content.ContextCompat
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column as ComposeColumn
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
@@ -68,6 +86,14 @@ import com.ondacast.app.cast.CastController
 import com.ondacast.app.cast.CastMedia
 import com.ondacast.app.cast.MediaKind
 import com.ondacast.app.data.Store
+
+/** Aviso de una página (alert/confirm/prompt) o petición de permiso, mostrado como diálogo. */
+class WebDialog(
+    val message: String,
+    val inputDefault: String?,
+    val showCancel: Boolean,
+    val onResult: (ok: Boolean, text: String?) -> Unit,
+)
 
 class Detected(val url: String, val kind: MediaKind, val title: String)
 
@@ -160,6 +186,8 @@ class BrowserState(ctx: Context) {
     var canForward by mutableStateOf(false)
     var desktop by mutableStateOf(Store.desktopMode)
     var bookmarked by mutableStateOf(false)
+    var dialog by mutableStateOf<WebDialog?>(null)
+    private val appCtx = ctx.applicationContext
 
     private val seen = HashSet<String>()
     private val ui = Handler(Looper.getMainLooper())
@@ -174,7 +202,9 @@ class BrowserState(ctx: Context) {
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = true
+            mediaPlaybackRequiresUserGesture = false
+            setGeolocationEnabled(true)
+            allowFileAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             loadWithOverviewMode = true
             useWideViewPort = true
@@ -194,9 +224,116 @@ class BrowserState(ctx: Context) {
                 add(url, k, title)
             }
         }, "OndaBridge")
+        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
+        web.setDownloadListener(DownloadListener { url, ua, cd, mime, _ ->
+            if (url.startsWith("blob:") || url.startsWith("data:")) {
+                CastController.events.tryEmit("Esta descarga no se puede guardar desde aquí")
+            } else try {
+                val name = URLUtil.guessFileName(url, cd, mime)
+                val req = DownloadManager.Request(Uri.parse(url))
+                    .setMimeType(mime)
+                    .addRequestHeader("User-Agent", ua)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                CookieManager.getInstance().getCookie(url)?.let { req.addRequestHeader("Cookie", it) }
+                (appCtx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
+                CastController.events.tryEmit("Descargando $name")
+            } catch (e: Exception) {
+                CastController.events.tryEmit("No se pudo descargar: ${e.message}")
+            }
+        })
         web.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progress = newProgress
+            }
+
+            // ---- Cámara y micrófono ----
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val needed = ArrayList<String>()
+                val names = ArrayList<String>()
+                request.resources.forEach {
+                    when (it) {
+                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> { needed.add(Manifest.permission.CAMERA); names.add("la cámara") }
+                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> { needed.add(Manifest.permission.RECORD_AUDIO); names.add("el micrófono") }
+                    }
+                }
+                if (needed.isEmpty()) {
+                    request.deny()
+                    return
+                }
+                dialog = WebDialog("${request.origin.host} quiere usar ${names.joinToString(" y ")}.", null, true) { ok, _ ->
+                    if (!ok) {
+                        request.deny()
+                    } else {
+                        val missing = needed.filter {
+                            ContextCompat.checkSelfPermission(appCtx, it) != PackageManager.PERMISSION_GRANTED
+                        }
+                        if (missing.isEmpty()) request.grant(request.resources)
+                        else WebHost.requestPermissions?.invoke(missing.toTypedArray()) { granted ->
+                            if (granted) request.grant(request.resources) else request.deny()
+                        } ?: request.deny()
+                    }
+                }
+            }
+
+            // ---- Ubicación ----
+            override fun onGeolocationPermissionsShowPrompt(origin: String, callback: GeolocationPermissions.Callback) {
+                dialog = WebDialog("$origin quiere conocer tu ubicación.", null, true) { ok, _ ->
+                    if (!ok) {
+                        callback.invoke(origin, false, false)
+                    } else {
+                        val perm = Manifest.permission.ACCESS_FINE_LOCATION
+                        if (ContextCompat.checkSelfPermission(appCtx, perm) == PackageManager.PERMISSION_GRANTED) {
+                            callback.invoke(origin, true, false)
+                        } else {
+                            WebHost.requestPermissions?.invoke(arrayOf(perm, Manifest.permission.ACCESS_COARSE_LOCATION)) { granted ->
+                                callback.invoke(origin, granted, false)
+                            } ?: callback.invoke(origin, false, false)
+                        }
+                    }
+                }
+            }
+
+            // ---- Subir archivos ----
+            override fun onShowFileChooser(
+                view: WebView, cb: ValueCallback<Array<Uri>>, params: FileChooserParams
+            ): Boolean {
+                val h = WebHost.chooseFile
+                if (h == null) {
+                    cb.onReceiveValue(null)
+                    return false
+                }
+                h(params, cb)
+                return true
+            }
+
+            // ---- Video a pantalla completa ----
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                WebHost.showCustomView?.invoke(view, callback) ?: callback.onCustomViewHidden()
+            }
+
+            override fun onHideCustomView() {
+                WebHost.hideCustomView?.invoke()
+            }
+
+            // ---- Avisos de la página ----
+            override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                dialog = WebDialog(message, null, false) { _, _ -> result.confirm() }
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
+                dialog = WebDialog(message, null, true) { ok, _ -> if (ok) result.confirm() else result.cancel() }
+                return true
+            }
+
+            override fun onJsPrompt(
+                view: WebView, url: String, message: String, defaultValue: String?, result: JsPromptResult
+            ): Boolean {
+                dialog = WebDialog(message, defaultValue ?: "", true) { ok, t ->
+                    if (ok) result.confirm(t ?: "") else result.cancel()
+                }
+                return true
             }
         }
         web.webViewClient = object : WebViewClient() {
@@ -323,6 +460,30 @@ fun BrowserScreen(b: BrowserState) {
                 b.ensureStarted()
                 b.web
             }
+        )
+    }
+
+    b.dialog?.let { d ->
+        var text by remember(d) { mutableStateOf(d.inputDefault ?: "") }
+        AlertDialog(
+            onDismissRequest = { b.dialog = null; d.onResult(false, null) },
+            text = {
+                ComposeColumn {
+                    Text(d.message)
+                    if (d.inputDefault != null) {
+                        OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    b.dialog = null
+                    d.onResult(true, if (d.inputDefault != null) text else null)
+                }) { Text(if (d.showCancel) "Permitir" else "Aceptar") }
+            },
+            dismissButton = if (d.showCancel) {
+                { TextButton(onClick = { b.dialog = null; d.onResult(false, null) }) { Text("Cancelar") } }
+            } else null,
         )
     }
 

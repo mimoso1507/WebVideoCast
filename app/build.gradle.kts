@@ -12,15 +12,27 @@ android {
         applicationId = "com.ondacast.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "1.0.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
+    }
+
+    // Clave fija: así cada versión nueva se instala encima de la anterior sin desinstalar.
+    signingConfigs {
+        create("onda") {
+            storeFile = file("ondacast.keystore")
+            storePassword = "ondacast123"
+            keyAlias = "ondacast"
+            keyPassword = "ondacast123"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("onda")
+        }
         release {
             isMinifyEnabled = false
-            // Firmado con la clave de depuración para poder instalar el APK directamente.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("onda")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
